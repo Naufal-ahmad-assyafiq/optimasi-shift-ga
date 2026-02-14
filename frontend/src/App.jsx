@@ -21,20 +21,15 @@ export default function App() {
   });
 
   // ✅ Mode penjadwalan
-  // - normal: seperti sekarang
-  // - rotation: rotasi mingguan per karyawan (Pagi->Siang->Malam)
   const [scheduleMode, setScheduleMode] = useState("normal"); // "normal" | "rotation"
 
   /**
-   * ✅ Libur Pabrik (Company Closed Days)
-   * - 2 hari/minggu => Sabtu + Minggu (tutup)
-   * - 1 hari/minggu => pilih Sabtu ATAU Minggu (tutup)
+   * ✅ Libur Pabrik
    */
-  const [factoryOffPerWeek, setFactoryOffPerWeek] = useState(2); // 1 atau 2
-  const [factoryOffOneDay, setFactoryOffOneDay] = useState(SAT); // kalau 1 hari, default Sabtu
-  const [offDays, setOffDays] = useState([SAT, SUN]); // otomatis sesuai pilihan
+  const [factoryOffPerWeek, setFactoryOffPerWeek] = useState(2);
+  const [factoryOffOneDay, setFactoryOffOneDay] = useState(SAT);
+  const [offDays, setOffDays] = useState([SAT, SUN]);
 
-  // ⚠️ Catatan: serverless Vercel bisa timeout kalau terlalu besar.
   const [populationSize, setPopulationSize] = useState(120);
   const [generations, setGenerations] = useState(500);
   const [mutationRate, setMutationRate] = useState(0.25);
@@ -43,7 +38,6 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Update offDays otomatis ketika user ubah libur pabrik
   useEffect(() => {
     if (factoryOffPerWeek === 2) setOffDays([SAT, SUN]);
     else setOffDays([factoryOffOneDay]);
@@ -66,6 +60,10 @@ export default function App() {
     setSelectedEmp(null);
 
     try {
+      // optional: biar serverless lebih aman
+      const safePop = scheduleMode === "rotation" ? Math.min(populationSize, 120) : populationSize;
+      const safeGen = scheduleMode === "rotation" ? Math.min(generations, 500) : generations;
+
       const res = await fetch("/api/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -76,7 +74,7 @@ export default function App() {
           demand,
           shiftTimes,
           rules: {
-            mode: scheduleMode, // ✅ ini yang baru
+            mode: scheduleMode,
 
             factoryOffPerWeek,
             offDays,
@@ -87,11 +85,11 @@ export default function App() {
             maxShiftsPerWeek: 5,
             maxNightPerWeek: 2,
 
-            // hanya dipakai untuk mode rotation (backend akan ignore kalau mode normal)
-            rotationOrder: SHIFTS, // ["Pagi","Siang","Malam"]
-            rotationStrictness: 25, // penalti bila melanggar rotasi (bisa di-tuning)
+            // ✅ rotasi mingguan
+            rotationOrder: SHIFTS,
+            rotationStrictness: 200, // 🔥 penting biar ngunci rotasi
           },
-          ga: { populationSize, generations, mutationRate },
+          ga: { populationSize: safePop, generations: safeGen, mutationRate },
         }),
       });
 
@@ -135,7 +133,6 @@ export default function App() {
           marginBottom: 16,
         }}
       >
-        {/* Baris Atas */}
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
           <label>
             Durasi:
@@ -152,7 +149,6 @@ export default function App() {
             </select>
           </label>
 
-          {/* ✅ Mode penjadwalan */}
           <label>
             Mode:
             <select
@@ -207,7 +203,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Karyawan */}
         <div>
           <div>Daftar karyawan (pisahkan koma):</div>
           <textarea
@@ -226,7 +221,6 @@ export default function App() {
           />
         </div>
 
-        {/* Shift */}
         <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
           {SHIFTS.map((shift) => (
             <div
@@ -281,7 +275,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* GA + tombol */}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
           <label>
             Pop:
@@ -361,7 +354,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* Hasil */}
       {result ? (
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
           <div style={{ padding: 12, borderRadius: 14, border: "1px solid #222", background: "#0b0b0b" }}>
@@ -375,7 +367,6 @@ export default function App() {
         </div>
       ) : null}
 
-      {/* Jadwal */}
       <h3 style={{ marginBottom: 10 }}>Jadwal per Hari</h3>
       {!grid ? (
         <div style={{ opacity: 0.75 }}>

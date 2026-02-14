@@ -1,6 +1,8 @@
 // frontend/api/optimize.js
 
-// ====== Helpers: Closed days ======
+// =====================
+// Closed day helpers
+// =====================
 function isClosedDay(dayIndex, offDays, closeOnOffDays) {
   if (!closeOnOffDays) return false;
   const dow = dayIndex % 7;
@@ -17,16 +19,35 @@ function applyClosedDaysToGrid(grid, days, shiftsLen, offDays, closeOnOffDays) {
   return grid;
 }
 
-// ====== Rotation helper ======
+// =====================
+// Rotation helpers
+// =====================
 function getRotationTargetShift(empIndex, weekIndex, rotationOrder) {
-  const order = Array.isArray(rotationOrder) && rotationOrder.length ? rotationOrder : ["Pagi", "Siang", "Malam"];
+  const order =
+    Array.isArray(rotationOrder) && rotationOrder.length
+      ? rotationOrder
+      : ["Pagi", "Siang", "Malam"];
   return order[(empIndex + weekIndex) % order.length];
 }
 
-// ====== GA helper ======
+function buildRotationPools({ employees, weekIndex, rotationOrder }) {
+  const pools = {}; // shiftName -> [emp,...]
+  for (let i = 0; i < employees.length; i++) {
+    const emp = employees[i];
+    const target = getRotationTargetShift(i, weekIndex, rotationOrder);
+    if (!pools[target]) pools[target] = [];
+    pools[target].push(emp);
+  }
+  return pools;
+}
+
+// =====================
+// GA helpers
+// =====================
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
+
 function shuffle(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -35,25 +56,73 @@ function shuffle(arr) {
   }
   return a;
 }
+
 function sampleUnique(arr, k) {
-  return shuffle(arr).slice(0, k);
+  if (!Array.isArray(arr) || arr.length === 0) return [];
+  return shuffle(arr).slice(0, Math.max(0, k));
 }
 
-// ====== Schedule generation ======
+// =====================
+// Schedule generation
+// =====================
 function createRandomSchedule({ days, shifts, employees, demand, rules }) {
   const offDays = rules?.offDays ?? [];
   const closeOnOffDays = rules?.closeOnOffDays ?? false;
+
+  const mode = rules?.mode ?? "normal"; // "normal" | "rotation"
+  const rotationOrder = rules?.rotationOrder ?? ["Pagi", "Siang", "Malam"];
 
   const grid = Array.from({ length: days }, () =>
     Array.from({ length: shifts.length }, () => [])
   );
 
   for (let d = 0; d < days; d++) {
+    // HARD: tutup pabrik => kosong
     if (isClosedDay(d, offDays, closeOnOffDays)) {
       for (let s = 0; s < shifts.length; s++) grid[d][s] = [];
       continue;
     }
 
+    // =====================
+    // MODE ROTATION (week lock)
+    // =====================
+    if (mode === "rotation") {
+      const week = Math.floor(d / 7);
+      const pools = buildRotationPools({ employees, weekIndex: week, rotationOrder });
+
+      // supaya tidak double shift per hari
+      const usedToday = new Set();
+
+      for (let sIdx = 0; sIdx < shifts.length; sIdx++) {
+        const shiftName = shifts[sIdx];
+        const need = demand[shiftName] ?? 0;
+        if (need <= 0) continue;
+
+        // kandidat utama: pool sesuai target minggu itu
+        const mainPool = (pools[shiftName] ?? []).filter((e) => !usedToday.has(e));
+
+        let chosen = [];
+        if (mainPool.length >= need) {
+          chosen = sampleUnique(mainPool, need);
+        } else {
+          chosen = [...mainPool];
+
+          // kalau kurang, pinjam dari karyawan lain (akan kena penalti rotasi di evaluasi)
+          const remain = need - chosen.length;
+          const fallback = employees.filter((e) => !usedToday.has(e) && !chosen.includes(e));
+          chosen = chosen.concat(sampleUnique(fallback, Math.min(remain, fallback.length)));
+        }
+
+        grid[d][sIdx] = chosen;
+        for (const e of chosen) usedToday.add(e);
+      }
+
+      continue; // lanjut hari berikutnya
+    }
+
+    // =====================
+    // MODE NORMAL (default lama)
+    // =====================
     let available = [...employees];
 
     for (let s = 0; s < shifts.length; s++) {
@@ -74,7 +143,9 @@ function createRandomSchedule({ days, shifts, employees, demand, rules }) {
   return grid;
 }
 
-// ====== Evaluation ======
+// =====================
+// Evaluation
+// =====================
 function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
   let penalty = 0;
 
@@ -90,7 +161,8 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
   // ✅ mode
   const mode = rules?.mode ?? "normal"; // "normal" | "rotation"
   const rotationOrder = rules?.rotationOrder ?? ["Pagi", "Siang", "Malam"];
-  const rotationStrictness = Number(rules?.rotationStrictness ?? 25); // penalti per assignment yang melanggar
+  // ⚠️ ini harus BESAR biar rotasi “dipaksa”
+  const rotationStrictness = Number(rules?.rotationStrictness ?? 200); // penalti per pelanggaran
 
   applyClosedDaysToGrid(grid, days, shifts.length, offDays, closeOnOffDays);
 
@@ -98,14 +170,11 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
   const nightIdx = shiftIndex["Malam"];
   const morningIdx = shiftIndex["Pagi"];
 
-  // map employee -> index (untuk target rotasi)
   const empIndexMap = Object.fromEntries(employees.map((e, i) => [e, i]));
 
-  // stats total (untuk fairness)
   const totalShifts = Object.fromEntries(employees.map((e) => [e, 0]));
   const nightShifts = Object.fromEntries(employees.map((e) => [e, 0]));
 
-  // counts per week for constraints
   const totalByWeek = Object.fromEntries(employees.map((e) => [e, []]));
   const nightByWeek = Object.fromEntries(employees.map((e) => [e, []]));
 
@@ -128,7 +197,7 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
         if (!Array.isArray(totalByWeek[emp][week])) totalByWeek[emp][week] = 0;
         totalByWeek[emp][week] += 1;
 
-        // ✅ rotasi mingguan: penalti jika ditempatkan bukan di shift target minggu itu
+        // ✅ ROTASI: penalti jika ditempatkan bukan di shift target minggu itu
         if (mode === "rotation") {
           const empIdx = empIndexMap[emp] ?? 0;
           const targetShift = getRotationTargetShift(empIdx, week, rotationOrder);
@@ -170,7 +239,7 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
     }
   }
 
-  // weekly limits (per minggu)
+  // weekly limits
   const weeks = Math.ceil(days / 7);
   for (const emp of employees) {
     for (let w = 0; w < weeks; w++) {
@@ -182,7 +251,7 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
     }
   }
 
-  // fairness (variance total shifts)
+  // fairness
   const totals = employees.map((e) => Number(totalShifts[e] ?? 0));
   const avg = totals.reduce((a, b) => a + b, 0) / (totals.length || 1);
   const variance =
@@ -193,7 +262,9 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
   return { fitness, penalty, stats: { totalShifts, nightShifts, variance } };
 }
 
-// ====== GA operators ======
+// =====================
+// GA operators
+// =====================
 function crossover(parentA, parentB) {
   const days = parentA.length;
   const cut = randInt(1, days - 1);
@@ -206,12 +277,16 @@ function mutate(grid, { days, shifts, employees, demand, rules }, mutationRate =
   const offDays = rules?.offDays ?? [];
   const closeOnOffDays = rules?.closeOnOffDays ?? false;
 
+  const mode = rules?.mode ?? "normal";
+  const rotationOrder = rules?.rotationOrder ?? ["Pagi", "Siang", "Malam"];
+
   const g = grid.map((day) => day.map((cell) => [...cell]));
   if (Math.random() > mutationRate) {
     applyClosedDaysToGrid(g, days, shifts.length, offDays, closeOnOffDays);
     return g;
   }
 
+  // pilih hari yang buka
   let d = randInt(0, days - 1);
   let tries = 0;
   while (tries < 30 && isClosedDay(d, offDays, closeOnOffDays)) {
@@ -224,21 +299,35 @@ function mutate(grid, { days, shifts, employees, demand, rules }, mutationRate =
   }
 
   const s = randInt(0, shifts.length - 1);
-  const need = demand[shifts[s]] ?? 0;
+  const shiftName = shifts[s];
+  const need = demand[shiftName] ?? 0;
   if (need <= 0) {
     applyClosedDaysToGrid(g, days, shifts.length, offDays, closeOnOffDays);
     return g;
   }
 
-  // hindari double shift: pilih dari karyawan yang belum terpakai di hari itu
+  // hindari double shift
   const dayAssigned = new Set();
   for (let ss = 0; ss < shifts.length; ss++) {
     if (ss === s) continue;
     for (const e of g[d][ss]) dayAssigned.add(e);
   }
 
-  const available = employees.filter((e) => !dayAssigned.has(e));
-  const pool = available.length >= need ? available : employees;
+  // MODE ROTATION: ambil kandidat dari pool target shift minggu itu
+  let pool = employees.filter((e) => !dayAssigned.has(e));
+
+  if (mode === "rotation") {
+    const week = Math.floor(d / 7);
+    const pools = buildRotationPools({ employees, weekIndex: week, rotationOrder });
+    const main = (pools[shiftName] ?? []).filter((e) => !dayAssigned.has(e));
+    if (main.length > 0) pool = main; // prioritas target
+  }
+
+  // fallback kalau pool kurang
+  if (pool.length < need) {
+    const fallback = employees.filter((e) => !dayAssigned.has(e));
+    pool = fallback;
+  }
 
   g[d][s] = sampleUnique(pool, Math.min(need, pool.length));
 
@@ -246,7 +335,9 @@ function mutate(grid, { days, shifts, employees, demand, rules }, mutationRate =
   return g;
 }
 
-// ====== Run GA ======
+// =====================
+// Run GA
+// =====================
 function runGA({ days, shifts, employees, demand, rules, ga }) {
   const populationSize = ga?.populationSize ?? 120;
   const generations = ga?.generations ?? 500;
@@ -308,7 +399,9 @@ function runGA({ days, shifts, employees, demand, rules, ga }) {
   };
 }
 
-// ====== Vercel handler ======
+// =====================
+// Vercel handler
+// =====================
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
