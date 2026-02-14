@@ -87,7 +87,7 @@ export default function App() {
 
             // ✅ rotasi mingguan
             rotationOrder: SHIFTS,
-            rotationStrictness: 200, // 🔥 penting biar ngunci rotasi
+            rotationStrictness: 60, // 🔥 penting biar ngunci rotasi
           },
           ga: { populationSize: safePop, generations: safeGen, mutationRate },
         }),
