@@ -17,6 +17,12 @@ function applyClosedDaysToGrid(grid, days, shiftsLen, offDays, closeOnOffDays) {
   return grid;
 }
 
+// ====== Rotation helper ======
+function getRotationTargetShift(empIndex, weekIndex, rotationOrder) {
+  const order = Array.isArray(rotationOrder) && rotationOrder.length ? rotationOrder : ["Pagi", "Siang", "Malam"];
+  return order[(empIndex + weekIndex) % order.length];
+}
+
 // ====== GA helper ======
 function randInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -81,15 +87,25 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
   const forbidNightToMorning = rules?.forbidNightToMorning ?? true;
   const forbidDoubleShiftPerDay = rules?.forbidDoubleShiftPerDay ?? true;
 
+  // ✅ mode
+  const mode = rules?.mode ?? "normal"; // "normal" | "rotation"
+  const rotationOrder = rules?.rotationOrder ?? ["Pagi", "Siang", "Malam"];
+  const rotationStrictness = Number(rules?.rotationStrictness ?? 25); // penalti per assignment yang melanggar
+
   applyClosedDaysToGrid(grid, days, shifts.length, offDays, closeOnOffDays);
 
   const shiftIndex = Object.fromEntries(shifts.map((n, i) => [n, i]));
   const nightIdx = shiftIndex["Malam"];
   const morningIdx = shiftIndex["Pagi"];
 
+  // map employee -> index (untuk target rotasi)
+  const empIndexMap = Object.fromEntries(employees.map((e, i) => [e, i]));
+
+  // stats total (untuk fairness)
   const totalShifts = Object.fromEntries(employees.map((e) => [e, 0]));
   const nightShifts = Object.fromEntries(employees.map((e) => [e, 0]));
 
+  // counts per week for constraints
   const totalByWeek = Object.fromEntries(employees.map((e) => [e, []]));
   const nightByWeek = Object.fromEntries(employees.map((e) => [e, []]));
 
@@ -102,6 +118,7 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
       const need = demand[shifts[s]] ?? 0;
       const assignedCount = grid[d][s].length;
 
+      // demand penalty
       if (assignedCount < need) penalty += (need - assignedCount) * 10;
       if (assignedCount > need) penalty += (assignedCount - need) * 2;
 
@@ -111,6 +128,13 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
         if (!Array.isArray(totalByWeek[emp][week])) totalByWeek[emp][week] = 0;
         totalByWeek[emp][week] += 1;
 
+        // ✅ rotasi mingguan: penalti jika ditempatkan bukan di shift target minggu itu
+        if (mode === "rotation") {
+          const empIdx = empIndexMap[emp] ?? 0;
+          const targetShift = getRotationTargetShift(empIdx, week, rotationOrder);
+          if (shifts[s] !== targetShift) penalty += rotationStrictness;
+        }
+
         if (shifts[s] === "Malam") {
           nightShifts[emp] = (nightShifts[emp] ?? 0) + 1;
           if (!Array.isArray(nightByWeek[emp][week])) nightByWeek[emp][week] = 0;
@@ -119,14 +143,18 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
       }
     }
 
+    // double shift/day
     if (forbidDoubleShiftPerDay) {
       for (const emp of employees) {
         let c = 0;
-        for (let s = 0; s < shifts.length; s++) if (grid[d][s].includes(emp)) c++;
+        for (let s = 0; s < shifts.length; s++) {
+          if (grid[d][s].includes(emp)) c++;
+        }
         if (c > 1) penalty += (c - 1) * 50;
       }
     }
 
+    // night -> morning
     if (
       forbidNightToMorning &&
       d < days - 1 &&
@@ -142,6 +170,7 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
     }
   }
 
+  // weekly limits (per minggu)
   const weeks = Math.ceil(days / 7);
   for (const emp of employees) {
     for (let w = 0; w < weeks; w++) {
@@ -153,6 +182,7 @@ function evaluateSchedule({ grid, days, shifts, employees, demand, rules }) {
     }
   }
 
+  // fairness (variance total shifts)
   const totals = employees.map((e) => Number(totalShifts[e] ?? 0));
   const avg = totals.reduce((a, b) => a + b, 0) / (totals.length || 1);
   const variance =
@@ -200,6 +230,7 @@ function mutate(grid, { days, shifts, employees, demand, rules }, mutationRate =
     return g;
   }
 
+  // hindari double shift: pilih dari karyawan yang belum terpakai di hari itu
   const dayAssigned = new Set();
   for (let ss = 0; ss < shifts.length; ss++) {
     if (ss === s) continue;
@@ -279,7 +310,6 @@ function runGA({ days, shifts, employees, demand, rules, ga }) {
 
 // ====== Vercel handler ======
 export default async function handler(req, res) {
-  // CORS (aman walau same-origin)
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");

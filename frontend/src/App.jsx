@@ -20,6 +20,11 @@ export default function App() {
     Malam: { start: "22:00", end: "06:00" },
   });
 
+  // ✅ Mode penjadwalan
+  // - normal: seperti sekarang
+  // - rotation: rotasi mingguan per karyawan (Pagi->Siang->Malam)
+  const [scheduleMode, setScheduleMode] = useState("normal"); // "normal" | "rotation"
+
   /**
    * ✅ Libur Pabrik (Company Closed Days)
    * - 2 hari/minggu => Sabtu + Minggu (tutup)
@@ -29,8 +34,7 @@ export default function App() {
   const [factoryOffOneDay, setFactoryOffOneDay] = useState(SAT); // kalau 1 hari, default Sabtu
   const [offDays, setOffDays] = useState([SAT, SUN]); // otomatis sesuai pilihan
 
-  // ⚠️ Catatan: di serverless Vercel, ini bisa berat.
-  // Kalau sering timeout, turunin jadi Pop 80, Gen 250.
+  // ⚠️ Catatan: serverless Vercel bisa timeout kalau terlalu besar.
   const [populationSize, setPopulationSize] = useState(120);
   const [generations, setGenerations] = useState(500);
   const [mutationRate, setMutationRate] = useState(0.25);
@@ -62,7 +66,6 @@ export default function App() {
     setSelectedEmp(null);
 
     try {
-      // ✅ Panggil serverless API Vercel (same domain)
       const res = await fetch("/api/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -73,25 +76,28 @@ export default function App() {
           demand,
           shiftTimes,
           rules: {
-            factoryOffPerWeek, // info (opsional)
-            offDays,
-            closeOnOffDays: true, // ✅ tutup pabrik pada offDays
+            mode: scheduleMode, // ✅ ini yang baru
 
-            // aturan lain
+            factoryOffPerWeek,
+            offDays,
+            closeOnOffDays: true,
+
             forbidDoubleShiftPerDay: true,
             forbidNightToMorning: true,
             maxShiftsPerWeek: 5,
             maxNightPerWeek: 2,
+
+            // hanya dipakai untuk mode rotation (backend akan ignore kalau mode normal)
+            rotationOrder: SHIFTS, // ["Pagi","Siang","Malam"]
+            rotationStrictness: 25, // penalti bila melanggar rotasi (bisa di-tuning)
           },
           ga: { populationSize, generations, mutationRate },
         }),
       });
 
       const data = await res.json().catch(() => ({}));
-
       if (!res.ok) {
-        const msg = data?.error || `Request gagal (HTTP ${res.status})`;
-        alert(msg);
+        alert(data?.error || `Request gagal (HTTP ${res.status})`);
         return;
       }
 
@@ -143,6 +149,19 @@ export default function App() {
               <option value={28}>28 hari</option>
               <option value={30}>30 hari</option>
               <option value={31}>31 hari</option>
+            </select>
+          </label>
+
+          {/* ✅ Mode penjadwalan */}
+          <label>
+            Mode:
+            <select
+              value={scheduleMode}
+              onChange={(e) => setScheduleMode(e.target.value)}
+              style={{ ...inputStyle, width: 200, marginLeft: 8 }}
+            >
+              <option value="normal">Normal (bebas)</option>
+              <option value="rotation">Rotasi Mingguan</option>
             </select>
           </label>
 
