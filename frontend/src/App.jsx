@@ -29,6 +29,8 @@ export default function App() {
   const [factoryOffOneDay, setFactoryOffOneDay] = useState(SAT); // kalau 1 hari, default Sabtu
   const [offDays, setOffDays] = useState([SAT, SUN]); // otomatis sesuai pilihan
 
+  // ⚠️ Catatan: di serverless Vercel, ini bisa berat.
+  // Kalau sering timeout, turunin jadi Pop 80, Gen 250.
   const [populationSize, setPopulationSize] = useState(120);
   const [generations, setGenerations] = useState(500);
   const [mutationRate, setMutationRate] = useState(0.25);
@@ -60,7 +62,8 @@ export default function App() {
     setSelectedEmp(null);
 
     try {
-      const res = await fetch("http://localhost:4000/api/optimize", {
+      // ✅ Panggil serverless API Vercel (same domain)
+      const res = await fetch("/api/optimize", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -84,10 +87,17 @@ export default function App() {
         }),
       });
 
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const msg = data?.error || `Request gagal (HTTP ${res.status})`;
+        alert(msg);
+        return;
+      }
+
       setResult(data);
-    } catch {
-      alert("Backend belum jalan atau error!");
+    } catch (err) {
+      alert(`API error: ${err?.message || "Unknown error"}`);
     } finally {
       setLoading(false);
     }
